@@ -6,7 +6,7 @@ Telegram-бот для создания и управления **AWS CloudFront
 
 - 👥 **Аккаунты**: добавить любое количество AWS-аккаунтов (по Access Key / Secret Key), переключаться между ними, удалять.
   Ключи проверяются через AWS STS и хранятся в базе **в зашифрованном виде**; сообщение с секретом бот сразу удаляет из чата.
-- ☁️ **Создать CloudFront**: указываете домен сервера (origin) → выбираете протокол (HTTP / HTTPS / Match viewer) и кэширование → бот создаёт дистрибуцию и присылает `xxxx.cloudfront.net`.
+- ☁️ **Создать CloudFront**: название → домен сервера → «Создать». Бот создаёт дистрибуцию по фиксированной схеме (HTTP only, CachingDisabled, AllViewer), присылает `xxxx.cloudfront.net`, а когда она развернётся — пишет отдельно.
 - 📋 **Мои CloudFront**: список дистрибуций активного аккаунта, статус, включение/выключение, удаление.
 - 🔒 Доступ только для Telegram ID из `ALLOWED_USERS`.
 
@@ -103,7 +103,8 @@ async def handler(message: Message, storage: Storage):
       "cloudfront:GetDistributionConfig",
       "cloudfront:UpdateDistribution",
       "cloudfront:DeleteDistribution",
-      "cloudfront:ListDistributions"
+      "cloudfront:ListDistributions",
+      "cloudfront:TagResource"
     ],
     "Resource": "*"
   }]
@@ -115,17 +116,23 @@ async def handler(message: Message, storage: Storage):
 
 ## Настройки создаваемой дистрибуции
 
-| Параметр | Значение |
-|---|---|
-| Origin | ваш домен (IP не поддерживается CloudFront) |
-| Protocol к origin | на выбор: `http-only` / `https-only` / `match-viewer` |
-| Viewer protocol | `allow-all` (HTTP и HTTPS) |
-| Методы | GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE |
-| Cache policy | `CachingDisabled` или `CachingOptimized` |
-| Origin request policy | `AllViewer` (все заголовки/куки/параметры передаются на сервер) |
-| HTTP | HTTP/2 + HTTP/3, IPv6 включён |
+Повторяют ручную схему в консоли AWS:
 
-Параметры легко поменять в `bot/aws_service.py` → `_create_distribution`.
+| Шаг в консоли | Значение в боте |
+|---|---|
+| Distribution name | название, которое вы вводите (тег `Name` + комментарий) |
+| Origin type → Other → Custom origin | ваш домен (IP CloudFront не принимает) |
+| Customize origin settings → Protocol | **HTTP only** (порт 80) |
+| Customize cache settings → Cache policy | **CachingDisabled** |
+| Origin request policy | **AllViewer** |
+
+Остальное — по умолчанию: Viewer protocol policy `Redirect HTTP to HTTPS`, методы GET/HEAD/OPTIONS/PUT/POST/PATCH/DELETE,
+сжатие включено, HTTP/2, IPv6 включён, все edge-локации, сертификат `*.cloudfront.net`, без WAF.
+
+> Тарифный план «Free» из консоли через API выбрать нельзя — дистрибуция создаётся с обычной оплатой по факту
+> (pay-as-you-go), на которую действует бесплатный лимит AWS: 1 ТБ трафика и 10 млн запросов в месяц.
+
+Поменять схему — константы в начале блока «Настройки создаваемой дистрибуции» в `bot/aws_service.py`.
 
 ## Структура
 

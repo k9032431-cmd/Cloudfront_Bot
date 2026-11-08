@@ -31,7 +31,7 @@ router = Router(name="accounts")
 
 class AccCb(CallbackData, prefix="acc"):
     action: str  # open | select | delete | delete_yes | add | back
-    id: int = 0
+    id: int | None = None
 
 
 class AddAccount(StatesGroup):

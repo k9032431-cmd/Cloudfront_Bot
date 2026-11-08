@@ -30,6 +30,7 @@ class DistributionInfo:
     origin: str
     comment: str
     etag: str = ""
+    arn: str = ""
 
 
 def _session(access_key: str, secret: str, region: str = "us-east-1") -> boto3.Session:
@@ -77,27 +78,42 @@ def _to_info(d: dict, etag: str = "") -> DistributionInfo:
         origin=origins[0]["DomainName"] if origins else "-",
         comment=cfg.get("Comment", d.get("Comment", "")),
         etag=etag,
+        arn=d.get("ARN", ""),
     )
 
 
-def _create_distribution(account: Account, origin_domain: str, origin_protocol: str, caching: bool) -> DistributionInfo:
-    origin_id = f"origin-{origin_domain}"[:128]
-    config = {
+# ---------- Настройки создаваемой дистрибуции (по схеме из инструкции) ----------
+# Origin type: Other → Custom origin (свой домен)
+ORIGIN_PROTOCOL_POLICY = "http-only"                 # Protocol: HTTP only
+CACHE_POLICY_ID = CACHE_POLICY_CACHING_DISABLED      # Cache policy: CachingDisabled
+ORIGIN_REQUEST_POLICY_ID = ORIGIN_REQUEST_POLICY_ALL_VIEWER  # Origin request policy: AllViewer
+# Всё остальное — как по умолчанию в консоли AWS:
+VIEWER_PROTOCOL_POLICY = "redirect-to-https"
+ALLOWED_METHODS = ["GET", "HEAD", "OPTIONS", "PUT", "POST", "PATCH", "DELETE"]
+
+
+def _build_config(name: str, origin_domain: str) -> dict:
+    origin_id = origin_domain[:128]
+    return {
         "CallerReference": f"tgbot-{int(time.time() * 1000)}",
-        "Comment": f"Created by bot: {origin_domain}"[:128],
+        "Comment": name[:128],
         "Enabled": True,
-        "PriceClass": "PriceClass_All",
-        "HttpVersion": "http2and3",
-        "IsIPV6Enabled": True,
+        "PriceClass": "PriceClass_All",       # все edge-локации (по умолчанию)
+        "HttpVersion": "http2",               # по умолчанию
+        "IsIPV6Enabled": True,                # по умолчанию
+        "DefaultRootObject": "",
         "Origins": {
             "Quantity": 1,
             "Items": [{
                 "Id": origin_id,
                 "DomainName": origin_domain,
+                "OriginPath": "",
+                "ConnectionAttempts": 3,
+                "ConnectionTimeout": 10,
                 "CustomOriginConfig": {
                     "HTTPPort": 80,
                     "HTTPSPort": 443,
-                    "OriginProtocolPolicy": origin_protocol,  # http-only | https-only | match-viewer
+                    "OriginProtocolPolicy": ORIGIN_PROTOCOL_POLICY,
                     "OriginSslProtocols": {"Quantity": 1, "Items": ["TLSv1.2"]},
                     "OriginReadTimeout": 30,
                     "OriginKeepaliveTimeout": 5,
@@ -106,24 +122,31 @@ def _create_distribution(account: Account, origin_domain: str, origin_protocol: 
         },
         "DefaultCacheBehavior": {
             "TargetOriginId": origin_id,
-            "ViewerProtocolPolicy": "allow-all",
+            "ViewerProtocolPolicy": VIEWER_PROTOCOL_POLICY,
             "AllowedMethods": {
-                "Quantity": 7,
-                "Items": ["GET", "HEAD", "OPTIONS", "PUT", "POST", "PATCH", "DELETE"],
+                "Quantity": len(ALLOWED_METHODS),
+                "Items": ALLOWED_METHODS,
                 "CachedMethods": {"Quantity": 2, "Items": ["GET", "HEAD"]},
             },
             "Compress": True,
-            "CachePolicyId": CACHE_POLICY_CACHING_OPTIMIZED if caching else CACHE_POLICY_CACHING_DISABLED,
-            "OriginRequestPolicyId": ORIGIN_REQUEST_POLICY_ALL_VIEWER,
+            "CachePolicyId": CACHE_POLICY_ID,
+            "OriginRequestPolicyId": ORIGIN_REQUEST_POLICY_ID,
         },
     }
-    resp = _cf(account).create_distribution(DistributionConfig=config)
+
+
+def _create_distribution(account: Account, name: str, origin_domain: str) -> DistributionInfo:
+    resp = _cf(account).create_distribution_with_tags(
+        DistributionConfigWithTags={
+            "DistributionConfig": _build_config(name, origin_domain),
+            "Tags": {"Items": [{"Key": "Name", "Value": name[:256]}]},
+        }
+    )
     return _to_info(resp["Distribution"], resp.get("ETag", ""))
 
 
-async def create_distribution(account: Account, origin_domain: str, origin_protocol: str = "match-viewer",
-                              caching: bool = False) -> DistributionInfo:
-    return await asyncio.to_thread(_wrap, _create_distribution, account, origin_domain, origin_protocol, caching)
+async def create_distribution(account: Account, name: str, origin_domain: str) -> DistributionInfo:
+    return await asyncio.to_thread(_wrap, _create_distribution, account, name, origin_domain)
 
 
 def _list_distributions(account: Account) -> list[DistributionInfo]:

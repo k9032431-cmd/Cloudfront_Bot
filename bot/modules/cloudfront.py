@@ -1,7 +1,8 @@
 """Создание и управление CloudFront-дистрибуциями активного аккаунта."""
+import asyncio
 import re
 
-from aiogram import F, Router
+from aiogram import Bot, F, Router
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command
 from aiogram.filters.callback_data import CallbackData
@@ -12,7 +13,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from .. import aws_service as aws
 from ..aws_service import DistributionInfo
-from ..storage import Storage
+from ..storage import Account, Storage
 from ..ui import cancel_menu, esc, main_menu
 
 BTN_CREATE = "☁️ Создать CloudFront"
@@ -22,8 +23,9 @@ ORDER = 10
 MENU = [BTN_CREATE, BTN_LIST]
 COMMANDS = [("create", "Создать CloudFront"), ("list", "Мои CloudFront")]
 HELP = (
-    "<b>☁️ Создать CloudFront</b> — укажите домен вашего сервера (origin), выберите протокол и кэширование — "
-    "бот создаст дистрибуцию и пришлёт адрес <code>xxxx.cloudfront.net</code>.\n"
+    "<b>☁️ Создать CloudFront</b> — укажите название и домен вашего сервера — бот создаст дистрибуцию "
+    "(Origin: HTTP only, CachingDisabled, AllViewer) и пришлёт адрес <code>xxxx.cloudfront.net</code>. "
+    "Когда она развернётся, бот напишет отдельно.\n"
     "⚠️ Origin должен быть доменом (не IP) — так требует CloudFront.\n\n"
     "<b>📋 Мои CloudFront</b> — список, статус, включение/выключение, удаление."
 )
@@ -36,18 +38,17 @@ router = Router(name="cloudfront")
 
 class DistCb(CallbackData, prefix="dist"):
     action: str  # open | enable | disable | delete | delete_yes | refresh | back
-    id: str = ""
+    id: str | None = None
 
 
 class CreateCb(CallbackData, prefix="create"):
-    step: str  # proto | cache | confirm | cancel
-    value: str = ""
+    step: str  # confirm | cancel
+    value: str | None = None
 
 
 class CreateDist(StatesGroup):
+    name = State()
     origin = State()
-    protocol = State()
-    caching = State()
     confirm = State()
 
 
@@ -60,21 +61,6 @@ def _choice_kb(options: list[tuple[str, CreateCb]]) -> InlineKeyboardMarkup:
     kb.button(text="❌ Отмена", callback_data=CreateCb(step="cancel"))
     kb.adjust(1)
     return kb.as_markup()
-
-
-def protocol_kb() -> InlineKeyboardMarkup:
-    return _choice_kb([
-        ("HTTP only (порт 80)", CreateCb(step="proto", value="http-only")),
-        ("HTTPS only (порт 443)", CreateCb(step="proto", value="https-only")),
-        ("Match viewer", CreateCb(step="proto", value="match-viewer")),
-    ])
-
-
-def caching_kb() -> InlineKeyboardMarkup:
-    return _choice_kb([
-        ("Без кэширования (CachingDisabled)", CreateCb(step="cache", value="off")),
-        ("С кэшированием (CachingOptimized)", CreateCb(step="cache", value="on")),
-    ])
 
 
 def confirm_create_kb() -> InlineKeyboardMarkup:
@@ -112,6 +98,12 @@ def confirm_delete_kb(dist_id: str) -> InlineKeyboardMarkup:
 
 # ---------- Создание ----------
 
+NAME_RE = re.compile(r"^[\w\-. ]{1,128}$")
+WATCH_INTERVAL = 30          # как часто проверять статус (сек)
+WATCH_TIMEOUT = 40 * 60      # сколько максимум ждать развёртывания (сек)
+_watchers: set[asyncio.Task] = set()
+
+
 @router.message(Command("create"))
 @router.message(F.text == BTN_CREATE)
 async def create_start(message: Message, state: FSMContext, storage: Storage):
@@ -120,16 +112,29 @@ async def create_start(message: Message, state: FSMContext, storage: Storage):
     if not active:
         await message.answer("Сначала добавьте AWS-аккаунт в «👥 Аккаунты».")
         return
-    await state.set_state(CreateDist.origin)
+    await state.set_state(CreateDist.name)
     await message.answer(
         f"Аккаунт: <b>{esc(active.name)}</b>\n\n"
-        "Отправьте <b>домен вашего сервера</b> (origin), например <code>example.com</code>:",
+        "Шаг 1/2. Введите <b>название</b> дистрибуции (Distribution name), например <code>my-server-1</code>:",
         reply_markup=cancel_menu(),
     )
 
 
+@router.message(CreateDist.name, F.text)
+async def create_name(message: Message, state: FSMContext):
+    name = message.text.strip()
+    if not NAME_RE.match(name):
+        await message.answer("Название: до 128 символов — буквы, цифры, пробел, <code>- _ .</code>. Попробуйте ещё раз:")
+        return
+    await state.update_data(name=name)
+    await state.set_state(CreateDist.origin)
+    await message.answer(
+        "Шаг 2/2. Отправьте <b>домен вашего сервера</b> (Custom origin), например <code>example.com</code>:"
+    )
+
+
 @router.message(CreateDist.origin, F.text)
-async def create_origin(message: Message, state: FSMContext):
+async def create_origin(message: Message, state: FSMContext, storage: Storage):
     domain = message.text.strip().lower()
     domain = re.sub(r"^https?://", "", domain).split("/")[0].split(":")[0]
     if IP_RE.match(domain):
@@ -139,9 +144,20 @@ async def create_origin(message: Message, state: FSMContext):
         await message.answer("Некорректный домен. Пример: <code>example.com</code>. Попробуйте ещё раз:")
         return
     await state.update_data(origin=domain)
-    await state.set_state(CreateDist.protocol)
-    await message.answer(f"Origin: <code>{domain}</code>\n\nКак CloudFront будет подключаться к серверу?",
-                         reply_markup=protocol_kb())
+    await state.set_state(CreateDist.confirm)
+    data = await state.get_data()
+    active = storage.get_active(message.from_user.id)
+    await message.answer(
+        "<b>Проверьте параметры:</b>\n\n"
+        f"Аккаунт: <b>{esc(active.name if active else '-')}</b>\n"
+        f"Название: <b>{esc(data['name'])}</b>\n"
+        f"Origin (Other → Custom origin): <code>{domain}</code>\n"
+        "Protocol: <code>HTTP only</code>\n"
+        "Cache policy: <code>CachingDisabled</code>\n"
+        "Origin request policy: <code>AllViewer</code>\n"
+        "Остальное — по умолчанию.",
+        reply_markup=confirm_create_kb(),
+    )
 
 
 @router.callback_query(CreateCb.filter(F.step == "cancel"))
@@ -152,30 +168,37 @@ async def create_cancel(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
 
 
-@router.callback_query(CreateDist.protocol, CreateCb.filter(F.step == "proto"))
-async def create_proto(cb: CallbackQuery, callback_data: CreateCb, state: FSMContext):
-    await state.update_data(protocol=callback_data.value)
-    await state.set_state(CreateDist.caching)
-    await cb.message.edit_text("Кэширование:", reply_markup=caching_kb())
-    await cb.answer()
-
-
-@router.callback_query(CreateDist.caching, CreateCb.filter(F.step == "cache"))
-async def create_cache(cb: CallbackQuery, callback_data: CreateCb, state: FSMContext, storage: Storage):
-    await state.update_data(caching=callback_data.value == "on")
-    await state.set_state(CreateDist.confirm)
-    data = await state.get_data()
-    active = storage.get_active(cb.from_user.id)
-    await cb.message.edit_text(
-        "<b>Проверьте параметры:</b>\n\n"
-        f"Аккаунт: <b>{esc(active.name if active else '-')}</b>\n"
-        f"Origin: <code>{data['origin']}</code>\n"
-        f"Протокол к origin: <code>{data['protocol']}</code>\n"
-        f"Кэширование: {'включено' if data['caching'] else 'выключено'}\n"
-        "Методы: все (GET, POST, PUT, …), заголовки: все (AllViewer)",
-        reply_markup=confirm_create_kb(),
+def _result_text(d: DistributionInfo, name: str, header: str) -> str:
+    return (
+        f"{header}\n\n"
+        f"Название: <b>{esc(name)}</b>\n"
+        f"Адрес: <code>{d.domain}</code>\n"
+        f"Origin: <code>{d.origin}</code>\n"
+        f"ID: <code>{d.id}</code>\n"
+        f"ARN: <code>{d.arn}</code>\n"
+        f"Статус: <b>{d.status}</b>"
     )
-    await cb.answer()
+
+
+async def _watch_deploy(bot: Bot, chat_id: int, account: Account, dist_id: str, name: str) -> None:
+    """Ждёт, пока дистрибуция развернётся (Deployed), и присылает сообщение."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + WATCH_TIMEOUT
+    while loop.time() < deadline:
+        await asyncio.sleep(WATCH_INTERVAL)
+        try:
+            d = await aws.get_distribution(account, dist_id)
+        except aws.AwsError:
+            continue
+        if d.status == "Deployed":
+            await bot.send_message(
+                chat_id,
+                _result_text(d, name, "🎉 <b>CloudFront развёрнут и готов к работе!</b>"),
+                reply_markup=distribution_card_kb(d),
+            )
+            return
+    await bot.send_message(chat_id, f"⏳ Дистрибуция <code>{dist_id}</code> всё ещё разворачивается. "
+                                    "Проверьте позже в «📋 Мои CloudFront».")
 
 
 @router.callback_query(CreateDist.confirm, CreateCb.filter(F.step == "confirm"))
@@ -189,21 +212,20 @@ async def create_confirm(cb: CallbackQuery, state: FSMContext, storage: Storage)
     await cb.message.edit_text("⏳ Создаю CloudFront…")
     await cb.answer()
     try:
-        d = await aws.create_distribution(active, data["origin"], data["protocol"], data["caching"])
+        d = await aws.create_distribution(active, data["name"], data["origin"])
     except aws.AwsError as e:
         await cb.message.edit_text(f"❌ Ошибка AWS:\n<code>{esc(e)}</code>")
         await cb.message.answer("Главное меню", reply_markup=main_menu())
         return
     await cb.message.edit_text(
-        "✅ <b>CloudFront создан!</b>\n\n"
-        f"Адрес: <code>{d.domain}</code>\n"
-        f"ID: <code>{d.id}</code>\n"
-        f"Origin: <code>{d.origin}</code>\n"
-        f"Статус: {d.status}\n\n"
-        "Развёртывание занимает ~5–15 минут. Статус можно проверить в «📋 Мои CloudFront».",
+        _result_text(d, data["name"], "✅ <b>CloudFront создан!</b>")
+        + "\n\nРазвёртывание занимает ~5–15 минут — я напишу, когда будет готово.",
         reply_markup=distribution_card_kb(d),
     )
     await cb.message.answer("Главное меню", reply_markup=main_menu())
+    task = asyncio.create_task(_watch_deploy(cb.bot, cb.message.chat.id, active, d.id, data["name"]))
+    _watchers.add(task)
+    task.add_done_callback(_watchers.discard)
 
 
 # ---------- Список и управление ----------
@@ -240,6 +262,7 @@ async def _show_dist(cb: CallbackQuery, storage: Storage, dist_id: str):
         f"<b>{d.domain}</b>\n\n"
         f"ID: <code>{d.id}</code>\n"
         f"Origin: <code>{d.origin}</code>\n"
+        f"ARN: <code>{d.arn}</code>\n"
         f"Включена: {'да 🟢' if d.enabled else 'нет ⚪️'}\n"
         f"Статус: {d.status}\n"
         f"Комментарий: {esc(d.comment) or '-'}",
