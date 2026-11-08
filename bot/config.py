@@ -16,6 +16,7 @@ class Config:
     allowed_users: frozenset[int]
     encryption_key: bytes
     db_path: Path
+    disabled_modules: frozenset[str] = frozenset()
 
 
 def _load_encryption_key(db_dir: Path) -> bytes:
@@ -47,4 +48,7 @@ def load_config() -> Config:
         allowed_users=allowed,
         encryption_key=_load_encryption_key(db_path.parent),
         db_path=db_path,
+        disabled_modules=frozenset(
+            x.strip() for x in os.getenv("DISABLED_MODULES", "").split(",") if x.strip()
+        ),
     )

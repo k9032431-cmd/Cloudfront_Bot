@@ -8,8 +8,8 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import BotCommand
 
 from bot.config import load_config
-from bot.handlers import router
-from bot.middleware import AccessMiddleware
+from bot.middleware import AccessMiddleware, MenuResetMiddleware
+from bot.registry import load_modules
 from bot.storage import Storage
 
 
@@ -21,21 +21,27 @@ async def main() -> None:
 
     bot = Bot(config.bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dp = Dispatcher(storage=MemoryStorage())
-    dp["storage"] = Storage(config.db_path, config.encryption_key)
+    storage = Storage(config.db_path, config.encryption_key)
+    dp["storage"] = storage
+    dp["config"] = config
 
     access = AccessMiddleware(config.allowed_users)
     dp.message.outer_middleware(access)
     dp.callback_query.outer_middleware(access)
-    dp.include_router(router)
+    dp.message.outer_middleware(MenuResetMiddleware())
 
-    await bot.set_my_commands([
-        BotCommand(command="start", description="Главное меню"),
-        BotCommand(command="create", description="Создать CloudFront"),
-        BotCommand(command="list", description="Мои CloudFront"),
-        BotCommand(command="accounts", description="Аккаунты AWS"),
-        BotCommand(command="cancel", description="Отменить действие"),
-        BotCommand(command="help", description="Помощь"),
-    ])
+    # Подключаем все модули из bot/modules/
+    modules = load_modules(config.disabled_modules)
+    commands: list[BotCommand] = []
+    for m in modules:
+        setup = getattr(m.module, "setup", None)
+        if callable(setup):
+            setup(dp, storage, config)
+        dp.include_router(m.router)
+        commands += [BotCommand(command=c, description=d) for c, d in m.commands]
+
+    await bot.set_my_commands(commands)
+    await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
 

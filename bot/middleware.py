@@ -25,3 +25,24 @@ class AccessMiddleware(BaseMiddleware):
         elif isinstance(event, CallbackQuery):
             await event.answer("Доступ запрещён", show_alert=True)
         return None
+
+
+class MenuResetMiddleware(BaseMiddleware):
+    """Нажатие кнопки главного меню прерывает любой незаконченный диалог.
+
+    Благодаря этому модулям не нужно заботиться о том, что текст кнопки
+    попадёт, например, в поле «название аккаунта».
+    """
+
+    async def __call__(self, handler, event, data):
+        from .registry import menu_buttons
+        from .ui import BTN_CANCEL
+
+        if isinstance(event, Message) and event.text and (
+            event.text in menu_buttons() or event.text == BTN_CANCEL or event.text.startswith("/")
+        ):
+            state = data.get("state")
+            if state is not None and data.get("raw_state") is not None:
+                await state.clear()
+                data["raw_state"] = None
+        return await handler(event, data)

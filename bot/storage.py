@@ -46,6 +46,11 @@ class Storage:
         )
         self._db.commit()
 
+    @property
+    def db(self) -> sqlite3.Connection:
+        """Соединение с БД — модули могут создавать в нём свои таблицы."""
+        return self._db
+
     def _row_to_account(self, row: sqlite3.Row) -> Account:
         return Account(
             id=row["id"],

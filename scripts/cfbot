@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+# Управление Cloudfront Bot. Установлен как /usr/local/bin/cfbot
+set -euo pipefail
+
+SERVICE="cloudfront-bot"
+DIR="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
+
+need_root() { [[ $EUID -eq 0 ]] || { echo "Нужен root: sudo cfbot $*"; exit 1; }; }
+
+usage() {
+  cat <<HELP
+Использование: cfbot <команда>
+
+  status      статус сервиса
+  logs        логи в реальном времени (Ctrl+C — выход)
+  start       запустить
+  stop        остановить
+  restart     перезапустить (после правки кода/модулей)
+  update      скачать новую версию из GitHub, обновить зависимости, перезапустить
+  config      открыть .env в редакторе и перезапустить
+  modules     список модулей (добавок) в bot/modules/
+  new-module <имя>  создать новый модуль из шаблона
+  backup      сохранить базу и .env в архив
+  uninstall   удалить сервис (папку $DIR можно удалить вручную)
+HELP
+}
+
+cmd="${1:-help}"; shift || true
+case "$cmd" in
+  status)  systemctl status "$SERVICE" --no-pager ;;
+  logs)    journalctl -u "$SERVICE" -f -n 100 ;;
+  start|stop|restart) need_root "$cmd"; systemctl "$cmd" "$SERVICE"; echo "OK: $cmd" ;;
+  update)
+    need_root update
+    cd "$DIR"
+    git pull --ff-only
+    .venv/bin/pip install -q -r requirements.txt
+    systemctl restart "$SERVICE"
+    echo "✅ Обновлено до $(git log -1 --format='%h %s')"
+    ;;
+  config)
+    need_root config
+    "${EDITOR:-nano}" "$DIR/.env"
+    systemctl restart "$SERVICE"
+    echo "✅ Настройки применены"
+    ;;
+  modules)
+    disabled="$(grep -E '^DISABLED_MODULES=' "$DIR/.env" 2>/dev/null | cut -d= -f2- || true)"
+    for f in "$DIR"/bot/modules/*.py; do
+      name="$(basename "$f" .py)"
+      [[ "$name" == _* ]] && continue
+      if [[ ",$disabled," == *",$name,"* ]]; then echo "  ⚪️ $name (выключен)"; else echo "  🟢 $name"; fi
+    done
+    ;;
+  new-module)
+    need_root new-module
+    name="${1:-}"
+    [[ "$name" =~ ^[a-z][a-z0-9_]*$ ]] || { echo "Укажите имя латиницей: cfbot new-module my_feature"; exit 1; }
+    dst="$DIR/bot/modules/$name.py"
+    [[ -e "$dst" ]] && { echo "Модуль $name уже существует"; exit 1; }
+    cp "$DIR/bot/modules/_template.py" "$dst"
+    echo "✅ Создан $dst"
+    echo "   Отредактируйте его и выполните: cfbot restart"
+    ;;
+  backup)
+    need_root backup
+    out="/root/cfbot-backup-$(date +%Y%m%d-%H%M%S).tar.gz"
+    tar -czf "$out" -C "$DIR" data .env
+    chmod 600 "$out"
+    echo "✅ Резервная копия: $out"
+    ;;
+  uninstall)
+    need_root uninstall
+    systemctl disable --now "$SERVICE" || true
+    rm -f "/etc/systemd/system/$SERVICE.service" /usr/local/bin/cfbot
+    systemctl daemon-reload
+    echo "Сервис удалён. Данные остались в $DIR (удалить: rm -rf $DIR)"
+    ;;
+  help|-h|--help) usage ;;
+  *) echo "Неизвестная команда: $cmd"; usage; exit 1 ;;
+esac
