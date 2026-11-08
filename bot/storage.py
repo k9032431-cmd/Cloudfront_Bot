@@ -1,4 +1,5 @@
 """SQLite-хранилище AWS-аккаунтов. Секретные ключи хранятся зашифрованными (Fernet)."""
+import json
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
@@ -37,6 +38,10 @@ class Storage:
                 region TEXT NOT NULL DEFAULT 'us-east-1',
                 aws_account_id TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS user_settings (
+                user_id INTEGER PRIMARY KEY,
+                data TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS active_account (
                 user_id INTEGER PRIMARY KEY,
@@ -116,3 +121,22 @@ class Storage:
             (user_id,),
         ).fetchone()
         return self._row_to_account(row) if row else None
+
+    # ---------- Шаблон настроек CloudFront ----------
+
+    def get_settings(self, user_id: int) -> dict:
+        from .cf_settings import normalize
+        row = self._db.execute("SELECT data FROM user_settings WHERE user_id = ?", (user_id,)).fetchone()
+        return normalize(json.loads(row["data"]) if row else None)
+
+    def save_settings(self, user_id: int, data: dict | None) -> None:
+        """Сохраняет шаблон настроек; None — сброс к схеме по умолчанию."""
+        if data is None:
+            self._db.execute("DELETE FROM user_settings WHERE user_id = ?", (user_id,))
+        else:
+            self._db.execute(
+                "INSERT INTO user_settings (user_id, data) VALUES (?, ?) "
+                "ON CONFLICT(user_id) DO UPDATE SET data = excluded.data",
+                (user_id, json.dumps(data)),
+            )
+        self._db.commit()

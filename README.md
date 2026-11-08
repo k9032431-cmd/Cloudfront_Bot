@@ -6,7 +6,9 @@ Telegram-бот для создания и управления **AWS CloudFront
 
 - 👥 **Аккаунты**: добавить любое количество AWS-аккаунтов (по Access Key / Secret Key), переключаться между ними, удалять.
   Ключи проверяются через AWS STS и хранятся в базе **в зашифрованном виде**; сообщение с секретом бот сразу удаляет из чата.
-- ☁️ **Создать CloudFront**: название → домен сервера → «Создать». Бот создаёт дистрибуцию по фиксированной схеме (HTTP only, CachingDisabled, AllViewer), присылает `xxxx.cloudfront.net`, а когда она развернётся — пишет отдельно.
+- ☁️ **Создать CloudFront**: название → домен сервера → (при желании «✏️ Изменить настройки») → «Создать». Бот присылает `xxxx.cloudfront.net`, а когда дистрибуция развернётся — пишет отдельно.
+- ⚙️ **Настройки**: схема по умолчанию для новых CloudFront — Origin protocol, Cache policy, Origin request policy, Viewer protocol, HTTP-версии (вкл. HTTP/3), методы, IPv6, Price class. Сохраняется для каждого пользователя.
+- ✏️ Настройки **уже созданного** CloudFront можно поменять из его карточки в «📋 Мои CloudFront».
 - 📋 **Мои CloudFront**: список дистрибуций активного аккаунта, статус, включение/выключение, удаление.
 - 🔒 Доступ только для Telegram ID из `ALLOWED_USERS`.
 
@@ -114,25 +116,32 @@ async def handler(message: Message, storage: Storage):
    (или просто `CloudFrontFullAccess`).
 3. Пользователь → **Security credentials** → **Create access key** → скопируйте *Access Key ID* и *Secret Access Key* и добавьте их в бота.
 
-## Настройки создаваемой дистрибуции
+## Настройки CloudFront
 
-Повторяют ручную схему в консоли AWS:
+Настройки можно менять в трёх местах:
 
-| Шаг в консоли | Значение в боте |
+1. **⚙️ Настройки** — шаблон для всех новых CloudFront (сохраняется сразу, «♻️ Сбросить» — вернуть схему ниже).
+2. **Перед созданием** — «✏️ Изменить настройки» на экране подтверждения (только для этой дистрибуции).
+3. **После создания** — «✏️ Настройки» в карточке дистрибуции → «💾 Применить» (обновляется в AWS, 5–15 мин).
+
+Схема по умолчанию (как в инструкции):
+
+| Шаг в консоли | Значение |
 |---|---|
 | Distribution name | название, которое вы вводите (тег `Name` + комментарий) |
 | Origin type → Other → Custom origin | ваш домен (IP CloudFront не принимает) |
-| Customize origin settings → Protocol | **HTTP only** (порт 80) |
-| Customize cache settings → Cache policy | **CachingDisabled** |
+| Protocol | **HTTP only** |
+| Cache policy | **CachingDisabled** |
 | Origin request policy | **AllViewer** |
-
-Остальное — по умолчанию: Viewer protocol policy `Redirect HTTP to HTTPS`, методы GET/HEAD/OPTIONS/PUT/POST/PATCH/DELETE,
-сжатие включено, HTTP/2, IPv6 включён, все edge-локации, сертификат `*.cloudfront.net`, без WAF.
+| Viewer protocol policy | Redirect HTTP to HTTPS |
+| HTTP versions | **HTTP/2 + HTTP/3** |
+| Allowed methods | GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE |
+| IPv6 / Price class | включён / все локации |
 
 > Тарифный план «Free» из консоли через API выбрать нельзя — дистрибуция создаётся с обычной оплатой по факту
 > (pay-as-you-go), на которую действует бесплатный лимит AWS: 1 ТБ трафика и 10 млн запросов в месяц.
 
-Поменять схему — константы в начале блока «Настройки создаваемой дистрибуции» в `bot/aws_service.py`.
+Поменять схему по умолчанию или добавить новую настройку — `bot/cf_settings.py` (`DEFAULTS`, `SETTINGS`).
 
 ## Структура
 
@@ -143,11 +152,12 @@ main.py                   — запуск бота, подключение мо
 bot/config.py             — настройки из .env
 bot/storage.py            — SQLite + шифрование ключей
 bot/aws_service.py        — работа с AWS (STS, CloudFront)
+bot/cf_settings.py        — настройки CloudFront: схема по умолчанию и варианты
 bot/registry.py           — автозагрузка модулей
 bot/ui.py                 — главное меню и общие кнопки
 bot/middleware.py         — доступ по ID, сброс диалога кнопками меню
 bot/modules/core.py       — /start, /help, /cancel
 bot/modules/accounts.py   — 👥 Аккаунты
-bot/modules/cloudfront.py — ☁️ Создать / 📋 Мои CloudFront
+bot/modules/cloudfront.py — ☁️ Создать / 📋 Мои CloudFront / ⚙️ Настройки
 bot/modules/_template.py  — шаблон нового модуля
 ```

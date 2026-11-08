@@ -12,22 +12,26 @@ from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from .. import aws_service as aws
+from .. import cf_settings
 from ..aws_service import DistributionInfo
 from ..storage import Account, Storage
 from ..ui import cancel_menu, esc, main_menu
 
 BTN_CREATE = "☁️ Создать CloudFront"
 BTN_LIST = "📋 Мои CloudFront"
+BTN_SETTINGS = "⚙️ Настройки"
 
 ORDER = 10
-MENU = [BTN_CREATE, BTN_LIST]
-COMMANDS = [("create", "Создать CloudFront"), ("list", "Мои CloudFront")]
+MENU = [BTN_CREATE, BTN_LIST, BTN_SETTINGS]
+COMMANDS = [("create", "Создать CloudFront"), ("list", "Мои CloudFront"), ("settings", "Настройки CloudFront")]
 HELP = (
     "<b>☁️ Создать CloudFront</b> — укажите название и домен вашего сервера — бот создаст дистрибуцию "
-    "(Origin: HTTP only, CachingDisabled, AllViewer) и пришлёт адрес <code>xxxx.cloudfront.net</code>. "
-    "Когда она развернётся, бот напишет отдельно.\n"
+    "и пришлёт адрес <code>xxxx.cloudfront.net</code>. Перед созданием настройки можно изменить "
+    "(«✏️ Изменить настройки»). Когда она развернётся, бот напишет отдельно.\n"
+    "<b>⚙️ Настройки</b> — схема по умолчанию для новых CloudFront "
+    "(Protocol, Cache policy, Origin request policy, HTTP/3 и др.).\n"
     "⚠️ Origin должен быть доменом (не IP) — так требует CloudFront.\n\n"
-    "<b>📋 Мои CloudFront</b> — список, статус, включение/выключение, удаление."
+    "<b>📋 Мои CloudFront</b> — список, статус, изменение настроек, включение/выключение, удаление."
 )
 
 DOMAIN_RE = re.compile(r"^(?=.{1,253}$)(?!-)([a-z0-9-]{1,63}(?<!-)\.)+[a-z]{2,63}$")
@@ -44,6 +48,17 @@ class DistCb(CallbackData, prefix="dist"):
 class CreateCb(CallbackData, prefix="create"):
     step: str  # confirm | cancel
     value: str | None = None
+
+
+class SetCb(CallbackData, prefix="cfs"):
+    t: str                  # t — шаблон, d — перед созданием, e — существующая дистрибуция
+    a: str                  # show | pick | set | reset | save | back
+    k: str | None = None    # ключ настройки
+    v: str | None = None    # значение
+
+
+class EditDist(StatesGroup):
+    editing = State()
 
 
 class CreateDist(StatesGroup):
@@ -64,7 +79,38 @@ def _choice_kb(options: list[tuple[str, CreateCb]]) -> InlineKeyboardMarkup:
 
 
 def confirm_create_kb() -> InlineKeyboardMarkup:
-    return _choice_kb([("🚀 Создать", CreateCb(step="confirm"))])
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🚀 Создать", callback_data=CreateCb(step="confirm"))
+    kb.button(text="✏️ Изменить настройки", callback_data=SetCb(t="d", a="show"))
+    kb.button(text="❌ Отмена", callback_data=CreateCb(step="cancel"))
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def settings_kb(target: str, values: dict) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    for st in cf_settings.SETTINGS:
+        kb.button(text=f"{st.title}: {st.label(values[st.key])}", callback_data=SetCb(t=target, a="pick", k=st.key))
+    if target == "t":
+        kb.button(text="♻️ Сбросить к схеме по умолчанию", callback_data=SetCb(t=target, a="reset"))
+    elif target == "d":
+        kb.button(text="♻️ Взять из шаблона", callback_data=SetCb(t=target, a="reset"))
+        kb.button(text="⬅️ Готово", callback_data=SetCb(t=target, a="back"))
+    else:
+        kb.button(text="💾 Применить", callback_data=SetCb(t=target, a="save"))
+        kb.button(text="⬅️ Назад без изменений", callback_data=SetCb(t=target, a="back"))
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def setting_options_kb(target: str, key: str, current: str) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    for value, label in cf_settings.SETTINGS_BY_KEY[key].options:
+        mark = "✅ " if value == current else ""
+        kb.button(text=f"{mark}{label}", callback_data=SetCb(t=target, a="set", k=key, v=value))
+    kb.button(text="⬅️ Назад", callback_data=SetCb(t=target, a="show"))
+    kb.adjust(1)
+    return kb.as_markup()
 
 
 def distributions_kb(items: list[DistributionInfo]) -> InlineKeyboardMarkup:
@@ -79,6 +125,7 @@ def distributions_kb(items: list[DistributionInfo]) -> InlineKeyboardMarkup:
 def distribution_card_kb(d: DistributionInfo) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.button(text="🔄 Обновить", callback_data=DistCb(action="refresh", id=d.id))
+    kb.button(text="✏️ Настройки", callback_data=DistCb(action="settings", id=d.id))
     if d.enabled:
         kb.button(text="⏸ Выключить", callback_data=DistCb(action="disable", id=d.id))
     else:
@@ -143,20 +190,20 @@ async def create_origin(message: Message, state: FSMContext, storage: Storage):
     if not DOMAIN_RE.match(domain):
         await message.answer("Некорректный домен. Пример: <code>example.com</code>. Попробуйте ещё раз:")
         return
-    await state.update_data(origin=domain)
+    await state.update_data(origin=domain, settings=storage.get_settings(message.from_user.id))
     await state.set_state(CreateDist.confirm)
+    await message.answer(await _confirm_text(state, storage, message.from_user.id), reply_markup=confirm_create_kb())
+
+
+async def _confirm_text(state: FSMContext, storage: Storage, user_id: int) -> str:
     data = await state.get_data()
-    active = storage.get_active(message.from_user.id)
-    await message.answer(
+    active = storage.get_active(user_id)
+    return (
         "<b>Проверьте параметры:</b>\n\n"
         f"Аккаунт: <b>{esc(active.name if active else '-')}</b>\n"
         f"Название: <b>{esc(data['name'])}</b>\n"
-        f"Origin (Other → Custom origin): <code>{domain}</code>\n"
-        "Protocol: <code>HTTP only</code>\n"
-        "Cache policy: <code>CachingDisabled</code>\n"
-        "Origin request policy: <code>AllViewer</code>\n"
-        "Остальное — по умолчанию.",
-        reply_markup=confirm_create_kb(),
+        f"Origin (Other → Custom origin): <code>{data['origin']}</code>\n"
+        f"{cf_settings.summary(data['settings'])}"
     )
 
 
@@ -212,13 +259,14 @@ async def create_confirm(cb: CallbackQuery, state: FSMContext, storage: Storage)
     await cb.message.edit_text("⏳ Создаю CloudFront…")
     await cb.answer()
     try:
-        d = await aws.create_distribution(active, data["name"], data["origin"])
+        d = await aws.create_distribution(active, data["name"], data["origin"], data["settings"])
     except aws.AwsError as e:
         await cb.message.edit_text(f"❌ Ошибка AWS:\n<code>{esc(e)}</code>")
         await cb.message.answer("Главное меню", reply_markup=main_menu())
         return
     await cb.message.edit_text(
         _result_text(d, data["name"], "✅ <b>CloudFront создан!</b>")
+        + "\n\n" + cf_settings.summary(data["settings"])
         + "\n\nРазвёртывание занимает ~5–15 минут — я напишу, когда будет готово.",
         reply_markup=distribution_card_kb(d),
     )
@@ -271,7 +319,7 @@ async def _show_dist(cb: CallbackQuery, storage: Storage, dist_id: str):
 
 
 @router.callback_query(DistCb.filter())
-async def dist_action(cb: CallbackQuery, callback_data: DistCb, storage: Storage):
+async def dist_action(cb: CallbackQuery, callback_data: DistCb, storage: Storage, state: FSMContext):
     active = storage.get_active(cb.from_user.id)
     if not active:
         await cb.answer("Нет активного аккаунта", show_alert=True)
@@ -283,6 +331,11 @@ async def dist_action(cb: CallbackQuery, callback_data: DistCb, storage: Storage
             await cb.message.edit_text(text, reply_markup=markup)
         elif action in ("open", "refresh"):
             await _show_dist(cb, storage, dist_id)
+        elif action == "settings":
+            values = await aws.get_settings(active, dist_id)
+            await state.set_state(EditDist.editing)
+            await state.update_data(edit_dist=dist_id, edit_settings=values)
+            await _render_editor(cb, "e", values, state)
         elif action in ("enable", "disable"):
             await aws.set_enabled(active, dist_id, action == "enable")
             await cb.answer("Готово, изменения применяются (5–15 мин)")
@@ -305,5 +358,97 @@ async def dist_action(cb: CallbackQuery, callback_data: DistCb, storage: Storage
     except TelegramBadRequest as e:
         if "not modified" in str(e):
             await cb.answer("Без изменений")
+        else:
+            raise
+
+
+# ---------- Редактор настроек (шаблон / перед созданием / существующая) ----------
+
+@router.message(Command("settings"))
+@router.message(F.text == BTN_SETTINGS)
+async def settings_menu(message: Message, state: FSMContext, storage: Storage):
+    await state.clear()
+    values = storage.get_settings(message.from_user.id)
+    await message.answer(_editor_title("t", {}) + "\n\n" + cf_settings.summary(values),
+                         reply_markup=settings_kb("t", values))
+
+
+def _editor_title(target: str, data: dict) -> str:
+    if target == "t":
+        return ("⚙️ <b>Настройки по умолчанию</b> для новых CloudFront\n"
+                "Изменения сохраняются сразу. Нажмите на пункт, чтобы изменить.")
+    if target == "d":
+        return f"✏️ <b>Настройки для «{esc(data.get('name', ''))}»</b>\nМеняются только для этой дистрибуции."
+    return (f"✏️ <b>Настройки</b> <code>{data.get('edit_dist', '')}</code>\n"
+            "Выберите изменения и нажмите «💾 Применить».")
+
+
+async def _get_values(target: str, user_id: int, state: FSMContext, storage: Storage) -> dict | None:
+    if target == "t":
+        return storage.get_settings(user_id)
+    data = await state.get_data()
+    return data.get("settings" if target == "d" else "edit_settings")
+
+
+async def _set_values(target: str, user_id: int, values: dict, state: FSMContext, storage: Storage) -> None:
+    if target == "t":
+        storage.save_settings(user_id, values)
+    else:
+        await state.update_data(**{"settings" if target == "d" else "edit_settings": values})
+
+
+async def _render_editor(cb: CallbackQuery, target: str, values: dict, state: FSMContext) -> None:
+    data = await state.get_data()
+    await cb.message.edit_text(_editor_title(target, data) + "\n\n" + cf_settings.summary(values),
+                               reply_markup=settings_kb(target, values))
+
+
+@router.callback_query(SetCb.filter())
+async def settings_action(cb: CallbackQuery, callback_data: SetCb, state: FSMContext, storage: Storage):
+    t, a, uid = callback_data.t, callback_data.a, cb.from_user.id
+    values = await _get_values(t, uid, state, storage)
+    if values is None:
+        await cb.answer("Это окно устарело — начните заново из меню", show_alert=True)
+        return
+    try:
+        if a == "show":
+            await _render_editor(cb, t, values, state)
+        elif a == "pick":
+            st = cf_settings.SETTINGS_BY_KEY[callback_data.k]
+            await cb.message.edit_text(f"<b>{st.title}</b>\nВыберите значение:",
+                                       reply_markup=setting_options_kb(t, st.key, values[st.key]))
+        elif a == "set":
+            values = cf_settings.normalize({**values, callback_data.k: callback_data.v})
+            await _set_values(t, uid, values, state, storage)
+            await _render_editor(cb, t, values, state)
+        elif a == "reset":
+            if t == "t":
+                storage.save_settings(uid, None)
+                values = storage.get_settings(uid)
+            else:
+                values = storage.get_settings(uid)
+                await _set_values(t, uid, values, state, storage)
+            await _render_editor(cb, t, values, state)
+            await cb.answer("Сброшено")
+            return
+        elif a == "back" and t == "d":
+            await cb.message.edit_text(await _confirm_text(state, storage, uid), reply_markup=confirm_create_kb())
+        elif a in ("back", "save") and t == "e":
+            data = await state.get_data()
+            dist_id = data["edit_dist"]
+            active = storage.get_active(uid)
+            if a == "save":
+                await cb.message.edit_text("⏳ Применяю настройки…")
+                await aws.update_settings(active, dist_id, values)
+                await cb.answer("Настройки применены, разворачивается 5–15 мин", show_alert=True)
+            await state.clear()
+            await _show_dist(cb, storage, dist_id)
+            return
+        await cb.answer()
+    except aws.AwsError as e:
+        await cb.answer(str(e)[:190], show_alert=True)
+    except TelegramBadRequest as e:
+        if "not modified" in str(e):
+            await cb.answer()
         else:
             raise

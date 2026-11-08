@@ -7,12 +7,8 @@ import boto3
 from botocore.config import Config as BotoConfig
 from botocore.exceptions import BotoCoreError, ClientError
 
+from . import cf_settings
 from .storage import Account
-
-# Managed-политики CloudFront (одинаковые во всех аккаунтах AWS)
-CACHE_POLICY_CACHING_DISABLED = "4135ea2d-6df8-44a3-9df3-4b5a84be39ad"
-CACHE_POLICY_CACHING_OPTIMIZED = "658327ea-f89d-4fab-a63d-7e88639e58f6"
-ORIGIN_REQUEST_POLICY_ALL_VIEWER = "216adef6-5c7f-47e4-b989-5492eafa07d3"
 
 _BOTO_CFG = BotoConfig(retries={"max_attempts": 3, "mode": "standard"}, connect_timeout=10, read_timeout=30)
 
@@ -82,25 +78,13 @@ def _to_info(d: dict, etag: str = "") -> DistributionInfo:
     )
 
 
-# ---------- Настройки создаваемой дистрибуции (по схеме из инструкции) ----------
-# Origin type: Other → Custom origin (свой домен)
-ORIGIN_PROTOCOL_POLICY = "http-only"                 # Protocol: HTTP only
-CACHE_POLICY_ID = CACHE_POLICY_CACHING_DISABLED      # Cache policy: CachingDisabled
-ORIGIN_REQUEST_POLICY_ID = ORIGIN_REQUEST_POLICY_ALL_VIEWER  # Origin request policy: AllViewer
-# Всё остальное — как по умолчанию в консоли AWS:
-VIEWER_PROTOCOL_POLICY = "redirect-to-https"
-ALLOWED_METHODS = ["GET", "HEAD", "OPTIONS", "PUT", "POST", "PATCH", "DELETE"]
-
-
-def _build_config(name: str, origin_domain: str) -> dict:
+def _build_config(name: str, origin_domain: str, settings: dict) -> dict:
+    """Origin type: Other → Custom origin. Остальное — из settings (см. bot/cf_settings.py)."""
     origin_id = origin_domain[:128]
-    return {
+    cfg = {
         "CallerReference": f"tgbot-{int(time.time() * 1000)}",
         "Comment": name[:128],
         "Enabled": True,
-        "PriceClass": "PriceClass_All",       # все edge-локации (по умолчанию)
-        "HttpVersion": "http2",               # по умолчанию
-        "IsIPV6Enabled": True,                # по умолчанию
         "DefaultRootObject": "",
         "Origins": {
             "Quantity": 1,
@@ -113,40 +97,52 @@ def _build_config(name: str, origin_domain: str) -> dict:
                 "CustomOriginConfig": {
                     "HTTPPort": 80,
                     "HTTPSPort": 443,
-                    "OriginProtocolPolicy": ORIGIN_PROTOCOL_POLICY,
+                    "OriginProtocolPolicy": "http-only",
                     "OriginSslProtocols": {"Quantity": 1, "Items": ["TLSv1.2"]},
                     "OriginReadTimeout": 30,
                     "OriginKeepaliveTimeout": 5,
                 },
             }],
         },
-        "DefaultCacheBehavior": {
-            "TargetOriginId": origin_id,
-            "ViewerProtocolPolicy": VIEWER_PROTOCOL_POLICY,
-            "AllowedMethods": {
-                "Quantity": len(ALLOWED_METHODS),
-                "Items": ALLOWED_METHODS,
-                "CachedMethods": {"Quantity": 2, "Items": ["GET", "HEAD"]},
-            },
-            "Compress": True,
-            "CachePolicyId": CACHE_POLICY_ID,
-            "OriginRequestPolicyId": ORIGIN_REQUEST_POLICY_ID,
-        },
+        "DefaultCacheBehavior": {"TargetOriginId": origin_id, "Compress": True},
     }
+    return cf_settings.apply_settings(cfg, settings)
 
 
-def _create_distribution(account: Account, name: str, origin_domain: str) -> DistributionInfo:
+def _create_distribution(account: Account, name: str, origin_domain: str, settings: dict) -> DistributionInfo:
     resp = _cf(account).create_distribution_with_tags(
         DistributionConfigWithTags={
-            "DistributionConfig": _build_config(name, origin_domain),
+            "DistributionConfig": _build_config(name, origin_domain, settings),
             "Tags": {"Items": [{"Key": "Name", "Value": name[:256]}]},
         }
     )
     return _to_info(resp["Distribution"], resp.get("ETag", ""))
 
 
-async def create_distribution(account: Account, name: str, origin_domain: str) -> DistributionInfo:
-    return await asyncio.to_thread(_wrap, _create_distribution, account, name, origin_domain)
+async def create_distribution(account: Account, name: str, origin_domain: str, settings: dict) -> DistributionInfo:
+    return await asyncio.to_thread(_wrap, _create_distribution, account, name, origin_domain, settings)
+
+
+def _get_settings(account: Account, dist_id: str) -> dict:
+    cfg = _cf(account).get_distribution_config(Id=dist_id)["DistributionConfig"]
+    return cf_settings.read_settings(cfg)
+
+
+async def get_settings(account: Account, dist_id: str) -> dict:
+    """Текущие настройки существующей дистрибуции."""
+    return await asyncio.to_thread(_wrap, _get_settings, account, dist_id)
+
+
+def _update_settings(account: Account, dist_id: str, settings: dict) -> None:
+    client = _cf(account)
+    resp = client.get_distribution_config(Id=dist_id)
+    cfg = cf_settings.apply_settings(resp["DistributionConfig"], settings)
+    client.update_distribution(Id=dist_id, IfMatch=resp["ETag"], DistributionConfig=cfg)
+
+
+async def update_settings(account: Account, dist_id: str, settings: dict) -> None:
+    """Применяет настройки к уже созданной дистрибуции."""
+    await asyncio.to_thread(_wrap, _update_settings, account, dist_id, settings)
 
 
 def _list_distributions(account: Account) -> list[DistributionInfo]:
