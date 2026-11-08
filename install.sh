@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Установка / обновление Cloudfront Bot на сервер (Ubuntu 22.04+/Debian 12+/CentOS/Alma/Rocky).
 #
-#   bash <(curl -fsSL https://raw.githubusercontent.com/k9032431-cmd/Cloudfront_Bot/main/install.sh)
+#   bash <(curl -fsSL https://raw.githubusercontent.com/k9032431-cmd/Cloudfront_Bot/HEAD/install.sh)
 #
 # Без вопросов (всё через переменные):
 #   BOT_TOKEN=123:ABC ALLOWED_USERS=111111111 bash install.sh
@@ -48,8 +48,14 @@ python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' \
 # ---------- 2. Код ----------
 if [[ -d "$INSTALL_DIR/.git" ]]; then
   info "Обновляю код в $INSTALL_DIR…"
-  git -C "$INSTALL_DIR" pull --ff-only
+  git -C "$INSTALL_DIR" pull --ff-only \
+    || die "Не удалось обновить код. Проверьте: cd $INSTALL_DIR && git status"
 else
+  if [[ -e "$INSTALL_DIR" ]] && [[ -n "$(ls -A "$INSTALL_DIR" 2>/dev/null)" ]]; then
+    backup_dir="${INSTALL_DIR}.old-$(date +%Y%m%d-%H%M%S)"
+    warn "Папка $INSTALL_DIR уже есть, но это не git-репозиторий — переношу её в $backup_dir"
+    mv "$INSTALL_DIR" "$backup_dir"
+  fi
   info "Скачиваю бота в $INSTALL_DIR…"
   git clone --depth 1 ${BRANCH:+-b "$BRANCH"} "$REPO_URL" "$INSTALL_DIR"
 fi

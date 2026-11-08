@@ -15,7 +15,7 @@ Telegram-бот для создания и управления **AWS CloudFront
 На чистом VPS (Ubuntu 22.04+ / Debian 12+ / Alma / Rocky), от root:
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/k9032431-cmd/Cloudfront_Bot/main/install.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/k9032431-cmd/Cloudfront_Bot/HEAD/install.sh)
 ```
 
 Скрипт спросит токен бота и ваш Telegram ID, затем сам: установит Python и зависимости,
