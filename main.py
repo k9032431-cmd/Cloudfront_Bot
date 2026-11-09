@@ -5,7 +5,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import BotCommand
+from aiogram.types import BotCommand, BotCommandScopeChat
 
 from bot.config import load_config
 from bot.middleware import AccessMiddleware, MenuResetMiddleware
@@ -16,8 +16,8 @@ from bot.storage import Storage
 async def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     config = load_config()
-    if not config.allowed_users:
-        logging.warning("ALLOWED_USERS пуст — бот никого не пустит. Напишите боту /start, чтобы узнать свой ID.")
+    if not config.admin_ids:
+        logging.warning("ADMIN_IDS пуст — бот никого не пустит. Напишите боту /start, чтобы узнать свой ID.")
 
     bot = Bot(config.bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dp = Dispatcher(storage=MemoryStorage())
@@ -25,7 +25,7 @@ async def main() -> None:
     dp["storage"] = storage
     dp["config"] = config
 
-    access = AccessMiddleware(config.allowed_users)
+    access = AccessMiddleware(config.admin_ids)
     dp.message.outer_middleware(access)
     dp.callback_query.outer_middleware(access)
     dp.message.outer_middleware(MenuResetMiddleware())
@@ -33,14 +33,23 @@ async def main() -> None:
     # Подключаем все модули из bot/modules/
     modules = load_modules(config.disabled_modules)
     commands: list[BotCommand] = []
+    admin_commands: list[BotCommand] = []
     for m in modules:
         setup = getattr(m.module, "setup", None)
         if callable(setup):
             setup(dp, storage, config)
         dp.include_router(m.router)
-        commands += [BotCommand(command=c, description=d) for c, d in m.commands]
+        cmds = [BotCommand(command=c, description=d) for c, d in m.commands]
+        admin_commands += cmds
+        if not m.admin_only:
+            commands += cmds
 
     await bot.set_my_commands(commands)
+    for admin_id in config.admin_ids:  # админам — ещё и админские команды
+        try:
+            await bot.set_my_commands(admin_commands, scope=BotCommandScopeChat(chat_id=admin_id))
+        except Exception as e:
+            logging.warning("Не удалось задать команды для админа %s: %s", admin_id, e)
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 

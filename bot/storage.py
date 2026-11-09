@@ -39,6 +39,12 @@ class Storage:
                 aws_account_id TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
+            CREATE TABLE IF NOT EXISTS users (
+                user_id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL DEFAULT '',
+                added_by INTEGER,
+                added_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
             CREATE TABLE IF NOT EXISTS user_settings (
                 user_id INTEGER PRIMARY KEY,
                 data TEXT NOT NULL
@@ -140,3 +146,28 @@ class Storage:
                 (user_id, json.dumps(data)),
             )
         self._db.commit()
+
+    # ---------- Пользователи с доступом ----------
+
+    def is_user(self, user_id: int) -> bool:
+        return self._db.execute("SELECT 1 FROM users WHERE user_id = ?", (user_id,)).fetchone() is not None
+
+    def add_user(self, user_id: int, added_by: int, name: str = "") -> bool:
+        """Возвращает False, если пользователь уже был."""
+        cur = self._db.execute(
+            "INSERT OR IGNORE INTO users (user_id, name, added_by) VALUES (?, ?, ?)", (user_id, name, added_by)
+        )
+        self._db.commit()
+        return cur.rowcount > 0
+
+    def remove_user(self, user_id: int) -> None:
+        self._db.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
+        self._db.commit()
+
+    def update_user_name(self, user_id: int, name: str) -> None:
+        self._db.execute("UPDATE users SET name = ? WHERE user_id = ? AND name != ?", (name, user_id, name))
+        self._db.commit()
+
+    def list_users(self) -> list[dict]:
+        rows = self._db.execute("SELECT user_id, name, added_at FROM users ORDER BY added_at").fetchall()
+        return [dict(r) for r in rows]

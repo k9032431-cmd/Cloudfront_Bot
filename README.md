@@ -10,7 +10,7 @@ Telegram-бот для создания и управления **AWS CloudFront
 - ⚙️ **Настройки**: схема по умолчанию для новых CloudFront — Origin protocol, Cache policy, Origin request policy, Viewer protocol, HTTP-версии (вкл. HTTP/3), методы, IPv6, Price class. Сохраняется для каждого пользователя.
 - ✏️ Настройки **уже созданного** CloudFront можно поменять из его карточки в «📋 Мои CloudFront».
 - 📋 **Мои CloudFront**: список дистрибуций активного аккаунта, статус, включение/выключение, удаление.
-- 🔒 Доступ только для Telegram ID из `ALLOWED_USERS`.
+- 👑 **Пользователи** (только главный админ): выдать доступ по Telegram ID, забрать доступ. Когда незнакомый человек пишет боту, админу приходит запрос с кнопкой «✅ Дать доступ». У каждого пользователя свои AWS-аккаунты и настройки.
 
 ## Установка на сервер одной командой
 
@@ -24,7 +24,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/k9032431-cmd/Cloudfront_Bot/
 скачает бота в `/opt/cloudfront-bot`, сгенерирует ключ шифрования, создаст сервис systemd
 (автозапуск после перезагрузки и перезапуск при падении) и запустит бота.
 
-Без вопросов: `BOT_TOKEN=123:ABC ALLOWED_USERS=111111111 bash <(curl -fsSL …/install.sh)`
+Без вопросов: `BOT_TOKEN=123:ABC ADMIN_IDS=111111111 bash <(curl -fsSL …/install.sh)`
 
 > Если репозиторий приватный — `curl` не скачает скрипт. Тогда:
 > `git clone https://github.com/k9032431-cmd/Cloudfront_Bot.git /opt/cloudfront-bot && bash /opt/cloudfront-bot/install.sh`
@@ -47,14 +47,21 @@ bash <(curl -fsSL https://raw.githubusercontent.com/k9032431-cmd/Cloudfront_Bot/
 | `cfbot uninstall` | удалить сервис |
 
 Не знаете свой Telegram ID? Оставьте его пустым при установке и напишите боту `/start` — он покажет ID.
-Потом `cfbot config` → впишите в `ALLOWED_USERS`.
+Потом `cfbot config` → впишите в `ADMIN_IDS`.
+
+### Доступ пользователей
+
+- **Главный админ** — Telegram ID в `ADMIN_IDS` в `.env` (можно несколько через запятую). Старое имя `ALLOWED_USERS` тоже работает.
+- Остальным доступ выдаёт админ прямо в боте: **👑 Пользователи → ➕ Дать доступ** → отправить ID (можно несколько через запятую).
+- Или проще: человек пишет боту `/start` → видит свой ID, а админу приходит запрос с кнопками **✅ Дать доступ / ❌ Отклонить**.
+- Забрать доступ: **👑 Пользователи** → пользователь → **🚫 Забрать доступ**. Его AWS-аккаунты сохраняются и вернутся, если снова дать доступ.
 
 ### Локальный запуск (для разработки)
 
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env      # заполните BOT_TOKEN и ALLOWED_USERS
+cp .env.example .env      # заполните BOT_TOKEN и ADMIN_IDS
 python main.py
 ```
 
@@ -88,6 +95,7 @@ async def handler(message: Message, storage: Storage):
 - Функции AWS — в `bot/aws_service.py` (там же удобно добавлять новые: Route 53, EC2 и т.д.).
 - Выключить модуль без удаления: `DISABLED_MODULES=имя` в `.env`.
 - Файлы, начинающиеся с `_`, не загружаются.
+- `ADMIN_ONLY = True` в модуле — кнопка видна и работает только у админов.
 
 ## Как получить ключи AWS
 
@@ -155,9 +163,11 @@ bot/aws_service.py        — работа с AWS (STS, CloudFront)
 bot/cf_settings.py        — настройки CloudFront: схема по умолчанию и варианты
 bot/registry.py           — автозагрузка модулей
 bot/ui.py                 — главное меню и общие кнопки
-bot/middleware.py         — доступ по ID, сброс диалога кнопками меню
+bot/middleware.py         — доступ (админы + выданный доступ), запросы доступа, сброс диалога
+bot/filters.py            — фильтр IsAdmin
 bot/modules/core.py       — /start, /help, /cancel
 bot/modules/accounts.py   — 👥 Аккаунты
+bot/modules/admin.py      — 👑 Пользователи (только админ)
 bot/modules/cloudfront.py — ☁️ Создать / 📋 Мои CloudFront / ⚙️ Настройки
 bot/modules/_template.py  — шаблон нового модуля
 ```

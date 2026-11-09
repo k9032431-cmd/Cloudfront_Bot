@@ -10,6 +10,7 @@
     ORDER    : int                          — порядок (меньше = раньше), по умолчанию 100
     COMMANDS : list[tuple[str, str]]        — команды для меню Telegram: ("cmd", "описание")
     HELP     : str                          — текст для /help
+    ADMIN_ONLY : bool                       — модуль только для админов (кнопки скрыты, доступ закрыт)
     setup    : callable(dp, storage, config) — необязательная инициализация (свои таблицы и т.п.)
 """
 import importlib
@@ -21,6 +22,7 @@ from types import ModuleType
 from aiogram import Router
 
 from . import modules as modules_pkg
+from .filters import IsAdmin
 
 log = logging.getLogger(__name__)
 
@@ -34,6 +36,7 @@ class LoadedModule:
     menu: list[str] = field(default_factory=list)
     commands: list[tuple[str, str]] = field(default_factory=list)
     help: str = ""
+    admin_only: bool = False
 
 
 # Заполняется в load_modules(); используется для построения меню и /help
@@ -51,6 +54,10 @@ def load_modules(disabled: set[str]) -> list[LoadedModule]:
         if not isinstance(router, Router):
             log.warning("Модуль %s пропущен: нет router", name)
             continue
+        admin_only = bool(getattr(mod, "ADMIN_ONLY", False))
+        if admin_only:
+            router.message.filter(IsAdmin())
+            router.callback_query.filter(IsAdmin())
         MODULES.append(LoadedModule(
             name=name,
             module=mod,
@@ -59,6 +66,7 @@ def load_modules(disabled: set[str]) -> list[LoadedModule]:
             menu=list(getattr(mod, "MENU", [])),
             commands=list(getattr(mod, "COMMANDS", [])),
             help=getattr(mod, "HELP", ""),
+            admin_only=admin_only,
         ))
     MODULES.sort(key=lambda m: (m.order, m.name))
     log.info("Загружены модули: %s", ", ".join(m.name for m in MODULES) or "-")

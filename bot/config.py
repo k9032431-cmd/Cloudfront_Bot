@@ -13,7 +13,7 @@ log = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class Config:
     bot_token: str
-    allowed_users: frozenset[int]
+    admin_ids: frozenset[int]
     encryption_key: bytes
     db_path: Path
     disabled_modules: frozenset[str] = frozenset()
@@ -38,14 +38,14 @@ def load_config() -> Config:
     token = os.getenv("BOT_TOKEN", "").strip()
     if not token:
         raise SystemExit("BOT_TOKEN не задан. Скопируйте .env.example в .env и заполните его.")
-    allowed = frozenset(
-        int(x) for x in os.getenv("ALLOWED_USERS", "").replace(" ", "").split(",") if x
-    )
+    # Главные админы. ALLOWED_USERS — старое имя переменной (для совместимости).
+    raw_admins = os.getenv("ADMIN_IDS", "").strip() or os.getenv("ALLOWED_USERS", "")
+    admins = frozenset(int(x) for x in raw_admins.replace(" ", "").split(",") if x)
     db_path = Path(os.getenv("DB_PATH", "data/bot.db"))
     db_path.parent.mkdir(parents=True, exist_ok=True)
     return Config(
         bot_token=token,
-        allowed_users=allowed,
+        admin_ids=admins,
         encryption_key=_load_encryption_key(db_path.parent),
         db_path=db_path,
         disabled_modules=frozenset(

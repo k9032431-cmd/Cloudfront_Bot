@@ -4,9 +4,9 @@
 #   bash <(curl -fsSL https://raw.githubusercontent.com/k9032431-cmd/Cloudfront_Bot/HEAD/install.sh)
 #
 # Без вопросов (всё через переменные):
-#   BOT_TOKEN=123:ABC ALLOWED_USERS=111111111 bash install.sh
+#   BOT_TOKEN=123:ABC ADMIN_IDS=111111111 bash install.sh
 #
-# Переменные: REPO_URL, BRANCH, INSTALL_DIR, BOT_TOKEN, ALLOWED_USERS
+# Переменные: REPO_URL, BRANCH, INSTALL_DIR, BOT_TOKEN, ADMIN_IDS
 set -euo pipefail
 
 REPO_URL="${REPO_URL:-https://github.com/k9032431-cmd/Cloudfront_Bot.git}"
@@ -77,14 +77,14 @@ chmod 700 data
 if [[ ! -f .env ]]; then
   info "Настройка бота"
   BOT_TOKEN="${BOT_TOKEN:-}"
-  ALLOWED_USERS="${ALLOWED_USERS:-}"
+  ADMIN_IDS="${ADMIN_IDS:-${ALLOWED_USERS:-}}"
   while [[ -z "$BOT_TOKEN" ]]; do ask "Токен бота от @BotFather: " BOT_TOKEN; done
-  [[ -n "$ALLOWED_USERS" ]] || ask "Ваш Telegram ID (через запятую, если несколько; Enter — узнать позже): " ALLOWED_USERS
+  [[ -n "$ADMIN_IDS" ]] || ask "Telegram ID главного админа (ваш; Enter — узнать позже): " ADMIN_IDS
   ENC_KEY="$(.venv/bin/python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')"
   cp .env.example .env
   sed -i \
     -e "s|^BOT_TOKEN=.*|BOT_TOKEN=${BOT_TOKEN}|" \
-    -e "s|^ALLOWED_USERS=.*|ALLOWED_USERS=${ALLOWED_USERS// /}|" \
+    -e "s|^ADMIN_IDS=.*|ADMIN_IDS=${ADMIN_IDS// /}|" \
     -e "s|^ENCRYPTION_KEY=.*|ENCRYPTION_KEY=${ENC_KEY}|" \
     .env
 else
@@ -142,7 +142,9 @@ else
   exit 1
 fi
 
-grep -q '^ALLOWED_USERS=$' .env && warn "ALLOWED_USERS пуст: напишите боту /start, он покажет ваш ID, затем выполните: cfbot config"
+if grep -qE '^(ADMIN_IDS|ALLOWED_USERS)=[0-9]' .env; then :; else
+  warn "Админ не задан: напишите боту /start, он покажет ваш ID, затем: cfbot config → ADMIN_IDS=ваш_ID"
+fi
 
 cat <<HELP
 
