@@ -1,6 +1,6 @@
 # Cloudfront Bot
 
-Telegram-бот для создания и управления **AWS CloudFront** с поддержкой **нескольких AWS-аккаунтов**.
+Telegram-бот для создания и управления **AWS CloudFront** и доменами в **Cloudflare**, с поддержкой нескольких аккаунтов.
 
 ## Возможности
 
@@ -10,6 +10,7 @@ Telegram-бот для создания и управления **AWS CloudFront
 - ⚙️ **Настройки**: схема по умолчанию для новых CloudFront — Origin protocol, Cache policy, Origin request policy, Viewer protocol, HTTP-версии (вкл. HTTP/3), методы, IPv6, Price class. Сохраняется для каждого пользователя.
 - ✏️ Настройки **уже созданного** CloudFront можно поменять из его карточки в «📋 Мои CloudFront».
 - 📋 **Мои CloudFront**: список дистрибуций активного аккаунта, статус, включение/выключение, удаление.
+- 🟠 **Cloudflare**: несколько аккаунтов Cloudflare (API Token или Global API Key); домены — добавить (сразу несколько), удалить, статус и NS; DNS-записи A/AAAA/CNAME/TXT/MX/NS — добавить, изменить, удалить, прокси 🟠/⚪, TTL; SSL-режим, Always HTTPS, Under Attack, Development mode, очистка кэша.
 - 👑 **Пользователи** (только главный админ): выдать доступ по Telegram ID, забрать доступ. Когда незнакомый человек пишет боту, админу приходит запрос с кнопкой «✅ Дать доступ». У каждого пользователя свои AWS-аккаунты и настройки.
 
 ## Установка на сервер одной командой
@@ -124,6 +125,28 @@ async def handler(message: Message, storage: Storage):
    (или просто `CloudFrontFullAccess`).
 3. Пользователь → **Security credentials** → **Create access key** → скопируйте *Access Key ID* и *Secret Access Key* и добавьте их в бота.
 
+## Cloudflare
+
+**🟠 Cloudflare → 👤 Аккаунты Cloudflare → ➕ Добавить** → название → API Token (или Global API Key, затем email).
+
+Создать API Token: dash.cloudflare.com → **My Profile → API Tokens → Create Token → Create Custom Token**:
+
+| Раздел | Право |
+|---|---|
+| Zone → Zone | Edit |
+| Zone → DNS | Edit |
+| Zone → Zone Settings | Edit |
+| Zone → Cache Purge | Purge |
+| Account → Account Settings | Read |
+
+Zone Resources: **All zones**, Account Resources: **All accounts**. (Global API Key — My Profile → API Tokens → Global API Key; даёт полный доступ.)
+
+Что можно делать:
+- **Домены**: список, добавить (можно несколько сразу — бот покажет NS для регистратора), проверить NS, удалить.
+- **DNS**: A, AAAA, CNAME, TXT, MX, NS — добавить, изменить значение, включить/выключить прокси 🟠, TTL, удалить.
+  Удобно для CloudFront: CNAME `cdn` → `xxxx.cloudfront.net`.
+- **Настройки домена**: SSL/TLS (Off/Flexible/Full/Full strict), Always Use HTTPS, Under Attack, Development mode, очистка кэша.
+
 ## Настройки CloudFront
 
 Настройки можно менять в трёх местах:
@@ -161,6 +184,8 @@ bot/config.py             — настройки из .env
 bot/storage.py            — SQLite + шифрование ключей
 bot/aws_service.py        — работа с AWS (STS, CloudFront)
 bot/cf_settings.py        — настройки CloudFront: схема по умолчанию и варианты
+bot/cloudflare/api.py     — клиент Cloudflare API
+bot/cloudflare/store.py   — аккаунты Cloudflare (зашифрованы)
 bot/registry.py           — автозагрузка модулей
 bot/ui.py                 — главное меню и общие кнопки
 bot/middleware.py         — доступ (админы + выданный доступ), запросы доступа, сброс диалога
@@ -168,6 +193,7 @@ bot/filters.py            — фильтр IsAdmin
 bot/modules/core.py       — /start, /help, /cancel
 bot/modules/accounts.py   — 👥 Аккаунты
 bot/modules/admin.py      — 👑 Пользователи (только админ)
+bot/modules/cloudflare.py — 🟠 Cloudflare: аккаунты, домены, DNS, настройки
 bot/modules/cloudfront.py — ☁️ Создать / 📋 Мои CloudFront / ⚙️ Настройки
 bot/modules/_template.py  — шаблон нового модуля
 ```

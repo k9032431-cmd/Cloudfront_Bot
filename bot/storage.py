@@ -57,6 +57,13 @@ class Storage:
         )
         self._db.commit()
 
+    def encrypt(self, text: str) -> bytes:
+        """Шифрует секрет (для модулей, которым нужно хранить свои ключи)."""
+        return self._fernet.encrypt(text.encode())
+
+    def decrypt(self, blob: bytes) -> str:
+        return self._fernet.decrypt(blob).decode()
+
     @property
     def db(self) -> sqlite3.Connection:
         """Соединение с БД — модули могут создавать в нём свои таблицы."""
