@@ -57,6 +57,10 @@ class AddCfAccount(StatesGroup):
 
 class AddZone(StatesGroup):
     domain = State()
+    account_id = State()
+
+
+ACCOUNT_ID_RE = re.compile(r"[0-9a-f]{32}")
 
 
 class AddRecord(StatesGroup):
@@ -597,11 +601,36 @@ async def zone_add(message: Message, state: FSMContext, cf_store: CloudflareStor
         except CfError:
             cf_id = ""
         if not cf_id:
-            await message.answer("❌ Не удалось определить Cloudflare account ID. Добавьте токену право "
-                                 "<b>Account → Account Settings → Read</b> и добавьте аккаунт заново.")
+            # Токену не хватает права Account Settings: Read — просим Account ID вручную
+            await state.update_data(domains=domains)
+            await state.set_state(AddZone.account_id)
+            await message.answer(
+                "Не удалось определить ID аккаунта Cloudflare (у токена нет права Account Settings: Read).\n\n"
+                "Отправьте <b>Account ID</b> — 32 символа. Где найти: dash.cloudflare.com → откройте аккаунт → "
+                "он есть в адресной строке (<code>dash.cloudflare.com/<b>xxxxxxxx…</b>/home</code>) "
+                "или на странице Overview любого домена справа внизу («Account ID»)."
+            )
             return
         cf_store.update_cf_account_id(acc.id, cf_id)
         acc.cf_account_id = cf_id
+    await _create_zones(message, state, acc, domains)
+
+
+@router.message(AddZone.account_id, F.text)
+async def zone_add_account_id(message: Message, state: FSMContext, cf_store: CloudflareStore):
+    m = ACCOUNT_ID_RE.search(message.text.strip().lower())
+    if not m:
+        await message.answer("Account ID — 32 символа (цифры и буквы a–f). Попробуйте ещё раз:")
+        return
+    acc = cf_store.get_active(message.from_user.id)
+    cf_store.update_cf_account_id(acc.id, m.group(0))
+    acc.cf_account_id = m.group(0)
+    data = await state.get_data()
+    await _create_zones(message, state, acc, data["domains"])
+
+
+async def _create_zones(message: Message, state: FSMContext, acc: CfAccount, domains: list[str]):
+    api = acc.api()
     await state.clear()
     wait = await message.answer("⏳ Добавляю…")
     results, kb = [], InlineKeyboardBuilder()

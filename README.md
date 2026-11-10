@@ -139,7 +139,9 @@ async def handler(message: Message, storage: Storage):
 | Zone → Cache Purge | Purge |
 | Account → Account Settings | Read |
 
-Zone Resources: **All zones**, Account Resources: **All accounts**. (Global API Key — My Profile → API Tokens → Global API Key; даёт полный доступ.)
+Zone Resources: **All zones**, Account Resources: **All accounts**.
+Право *Account Settings: Read* не обязательно: без него бот при добавлении первого домена попросит Account ID
+(32 символа из адресной строки `dash.cloudflare.com/<ID>/home`). (Global API Key — My Profile → API Tokens → Global API Key; даёт полный доступ.)
 
 Что можно делать:
 - **Домены**: список, добавить (можно несколько сразу — бот покажет NS для регистратора), проверить NS, удалить.
