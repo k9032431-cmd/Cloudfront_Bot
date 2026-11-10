@@ -115,7 +115,7 @@ class CloudflareAPI:
         """Ищет запись по началу ID (в кнопках Telegram полный ID не помещается)."""
         page = 1
         while True:
-            p = await self._page(f"/zones/{zone_id}/dns_records", {"page": page, "per_page": 500})
+            p = await self._page(f"/zones/{zone_id}/dns_records", {"page": page, "per_page": 100})
             for r in p.items:
                 if r["id"].startswith(prefix):
                     return r

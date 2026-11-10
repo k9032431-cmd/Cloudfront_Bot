@@ -1,11 +1,12 @@
 import asyncio
+import html
 import logging
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import BotCommand, BotCommandScopeChat
+from aiogram.types import BotCommand, BotCommandScopeChat, ErrorEvent
 
 from bot.config import load_config
 from bot.middleware import AccessMiddleware, MenuResetMiddleware
@@ -29,6 +30,20 @@ async def main() -> None:
     dp.message.outer_middleware(access)
     dp.callback_query.outer_middleware(access)
     dp.message.outer_middleware(MenuResetMiddleware())
+
+    @dp.errors()
+    async def on_error(event: ErrorEvent) -> bool:
+        """Непредвиденная ошибка: пишем в лог и показываем пользователю, а не молчим."""
+        logging.exception("Ошибка при обработке: %s", event.exception, exc_info=event.exception)
+        text = f"⚠️ Ошибка: {type(event.exception).__name__}: {event.exception}"[:190]
+        try:
+            if event.update.callback_query:
+                await event.update.callback_query.answer(text, show_alert=True)
+            elif event.update.message:
+                await event.update.message.answer(html.escape(text))
+        except Exception:
+            pass
+        return True
 
     # Подключаем все модули из bot/modules/
     modules = load_modules(config.disabled_modules)

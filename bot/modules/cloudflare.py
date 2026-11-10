@@ -357,10 +357,22 @@ SETTING_MAP = {  # короткое имя в кнопке → (настройк
 
 
 # ---------- DNS-записи ----------
+# Cloudflare больше не возвращает zone_name/zone_id в DNS-записях — имя зоны берём отдельно (с кэшем).
+_zone_names: dict[str, str] = {}
+
+
+async def _zone_name(acc: CfAccount, zone_id: str) -> str:
+    if zone_id not in _zone_names:
+        _zone_names[zone_id] = (await acc.api().get_zone(zone_id))["name"]
+    return _zone_names[zone_id]
+
+
+def _proxiable(rec: dict) -> bool:
+    return rec.get("proxiable", rec["type"] in PROXIABLE)
 
 async def _records_view(acc: CfAccount, zone_id: str, page: int):
     p = await acc.api().list_records(zone_id, page=page, per_page=PER_PAGE)
-    zone_name = p.items[0]["zone_name"] if p.items else (await acc.api().get_zone(zone_id))["name"]
+    zone_name = await _zone_name(acc, zone_id)
     kb = InlineKeyboardBuilder()
     for r in p.items:
         cloud = "🟠" if r.get("proxied") else "⚪"
@@ -382,21 +394,21 @@ async def _records_view(acc: CfAccount, zone_id: str, page: int):
     return text, kb.as_markup()
 
 
-def _record_view(rec: dict, zone_id: str):
+def _record_view(rec: dict, zone_id: str, zone_name: str):
     short = rec["id"][:12]
     lines = [
-        f"📝 <b>{rec['type']}</b> запись — {rec['zone_name']}\n",
+        f"📝 <b>{rec['type']}</b> запись — {zone_name}\n",
         f"Имя: <code>{rec['name']}</code>",
         f"Значение: <code>{esc(rec['content'])}</code>",
     ]
     if rec["type"] == "MX":
         lines.append(f"Приоритет: {rec.get('priority')}")
-    if rec.get("proxiable"):
+    if _proxiable(rec):
         lines.append(f"Прокси: {'🟠 Proxied' if rec.get('proxied') else '⚪ DNS only'}")
     lines.append(f"TTL: {_ttl_label(rec.get('ttl', 1))}")
     kb = InlineKeyboardBuilder()
     kb.button(text="✏️ Изменить значение", callback_data=CfCb(a="redit", z=zone_id, r=short))
-    if rec.get("proxiable"):
+    if _proxiable(rec):
         kb.button(text="⚪ Сделать DNS only" if rec.get("proxied") else "🟠 Включить прокси",
                   callback_data=CfCb(a="rprox", z=zone_id, r=short))
     if not rec.get("proxied"):
@@ -510,7 +522,7 @@ async def cf_action(cb: CallbackQuery, callback_data: CfCb, state: FSMContext, c
             text, kb = await _records_view(acc, z, int(v or 1))
             await _edit(cb, text, kb)
         elif a == "rec":
-            text, kb = _record_view(await _get_record(acc, z, r), z)
+            text, kb = _record_view(await _get_record(acc, z, r), z, await _zone_name(acc, z))
             await _edit(cb, text, kb)
         elif a == "radd":
             kb = InlineKeyboardBuilder()
@@ -533,7 +545,7 @@ async def cf_action(cb: CallbackQuery, callback_data: CfCb, state: FSMContext, c
             rec = await _get_record(acc, z, r)
             rec = await api.update_record(z, rec["id"], {"proxied": not rec.get("proxied")})
             await cb.answer("🟠 Прокси включён" if rec.get("proxied") else "⚪ Только DNS")
-            text, kb = _record_view(rec, z)
+            text, kb = _record_view(rec, z, await _zone_name(acc, z))
             await _edit(cb, text, kb)
             return
         elif a == "rttl":
@@ -548,7 +560,7 @@ async def cf_action(cb: CallbackQuery, callback_data: CfCb, state: FSMContext, c
         elif a == "rttlset":
             rec = await _get_record(acc, z, r)
             rec = await api.update_record(z, rec["id"], {"ttl": int(v)})
-            text, kb = _record_view(rec, z)
+            text, kb = _record_view(rec, z, await _zone_name(acc, z))
             await _edit(cb, text, kb)
         elif a == "redit":
             rec = await _get_record(acc, z, r)
@@ -729,7 +741,7 @@ async def _create_record(message: Message, state: FSMContext, cf_store: Cloudfla
         await message.answer(f"❌ Cloudflare: <code>{esc(e)}</code>", reply_markup=main_menu())
         return
     await message.answer("✅ Запись создана", reply_markup=main_menu())
-    text, kb = _record_view(rec, data["zone_id"])
+    text, kb = _record_view(rec, data["zone_id"], await _zone_name(acc, data["zone_id"]))
     await message.answer(text, reply_markup=kb)
 
 
@@ -751,5 +763,5 @@ async def rec_edit_content(message: Message, state: FSMContext, cf_store: Cloudf
         await message.answer(f"❌ Cloudflare: <code>{esc(e)}</code>", reply_markup=main_menu())
         return
     await message.answer("✅ Значение изменено", reply_markup=main_menu())
-    text, kb = _record_view(rec, data["zone_id"])
+    text, kb = _record_view(rec, data["zone_id"], await _zone_name(acc, data["zone_id"]))
     await message.answer(text, reply_markup=kb)
